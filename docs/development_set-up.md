@@ -23,3 +23,10 @@ To make the development environment as close to production as possible, we can u
 
 ### Conclusion
 Thus, depending on financial capabilities and availability requirements, we can choose cloud solutions for a quick start or Kubernetes for a more complex and scalable environment that will ensure proximity to production and flexibility for developers.
+
+### CI/CD Tooling
+Since our demo application is hosted on GitHub, I would utilize GitHub Actions for building, testing, and deploying in the case where we use AWS cloud services. GitHub Actions provides seamless integration with GitHub repositories and offers a wide range of actions that can be customized to fit our pipeline needs.
+
+In the scenario where we use Kubernetes (k8s), I would separate the tasks into two stages:
+- **Testing and Building Containers**: These tasks would be handled on the GitHub side using GitHub Actions. The resulting container images would then be pushed to Amazon ECR (Elastic Container Registry) for storage and further deployment.
+- **Deployment**: For deployment, I would use ArgoCD, which is specifically designed for continuous delivery on Kubernetes. ArgoCD offers declarative GitOps-based deployment, ensuring that our Kubernetes cluster stays in sync with the desired state defined in our GitHub repository.
