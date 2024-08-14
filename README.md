@@ -13,6 +13,9 @@ This directory contains an example of Infrastructure as Code (IaC) configuration
 ### 3. [`docs/development_set-up.md`](docs/development_set-up.md)
 This document contains a discussion and justification of the tool choices and approaches for setting up the development environment. It describes how to deploy the infrastructure for a test environment and provides examples of possible solutions.
 
+### 4. [`docs/production_set-up.md`](docs/production_set-up.md)
+This document discusses the recommendations for setting up the production environment, including the number of environments needed, CI/CD tooling, additional tools for production stability, networking, reliability and scalability mechanisms, and alerting considerations.
+
 ## Note
 
 Please note that all files are only samples and do not contain specific configurations for a particular application. They provide general information and structure that can be adapted to meet the specific needs of the project.
