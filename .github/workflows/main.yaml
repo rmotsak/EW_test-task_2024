@@ -1,0 +1,185 @@
+name: Build & Push
+
+on:
+  push:
+    branches:
+      - master
+      - develop
+    paths:
+      - 'src/**'
+  pull_request:
+    branches:
+      - master
+      - develop
+
+  workflow_dispatch:
+    inputs:
+        environment:
+            description: 'Target environment'
+            required: true
+            type: choice
+            options:
+                - development
+                - production
+            default: 'development'
+        execute_release:
+            description: 'Perform release deployment?'
+            required: false
+            default: false
+            type: 'boolean'
+env:
+  ENVIRONMENT: development
+
+jobs:
+  setup-env:
+    runs-on: ubuntu-latest
+    outputs:
+      ecr_url: ${{ steps.set-deployment-variables.outputs.ecr_url }}
+      push_image: ${{ steps.set-push-image.outputs.push_image }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Set Environment
+        if: github.event_name == 'push'
+        id: set-environment
+        run: |
+          echo "ENVIRONMENT=${{ github.ref == 'refs/heads/main' && 'production' || 'development' }}" >> $GITHUB_ENV
+
+      - name: Set Environment from Manual Trigger
+        if: github.event_name == 'workflow_dispatch'
+        run: echo "ENVIRONMENT=${{ github.event.inputs.environment }}" >> $GITHUB_ENV
+
+      - name: 🔧 Set Deployment Variables
+        id: set-deployment-variables
+        run: |
+          if [ "${{ env.ENVIRONMENT }}" == "production" ]; then
+            echo "ecr_url=${{ vars.PROD_ECR_URL }}" >> $GITHUB_OUTPUT
+          else
+            echo "ecr_url=${{ vars.DEV_ECR_URL }}" >> $GITHUB_OUTPUT
+          fi
+
+      - name: Set push-image flag
+        id: set-push-image
+        run: |
+          if [ "${{ github.event_name }}" == "push" ] || [ "${{ github.event.inputs.execute_release }}" == "true" ]; then
+            echo "push_image=true" >> $GITHUB_OUTPUT
+          else
+            echo "push_image=false" >> $GITHUB_OUTPUT
+          fi
+
+  app-test:
+    runs-on: ubuntu-latest
+    steps:
+      - name: 🧪 Test App
+        working-directory: ${{ vars.APP_SRC_PATH }}
+        run: echo "Running App tests...."
+
+  app-build-and-push:
+    runs-on: ubuntu-latest
+    needs:
+      - setup-env
+    outputs:
+      image-tag: ${{ steps.image-tag.outputs.tag }}
+    steps:
+      - name: Checkout repository
+        uses: actions/checkout@v4
+
+      - name: Get Image Tag
+        id: image-tag
+        uses: ./.github/actions/image-tag
+
+      - name: 🙏 Docker image build
+        working-directory: ${{ vars.APP_SRC_PATH }}
+        shell: bash
+        run: |
+          docker build -f Dockerfile -t ${{ needs.setup-env.outputs.ecr_url}}/${{ vars.APP_IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }} .
+          docker tag ${{ needs.setup-env.outputs.ecr_url}}/${{ vars.APP_IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }} ${{ needs.setup-env.outputs.ecr_url}}/${{ vars.APP_IMAGE_NAME }}:latest
+
+      - name: Vulnerability Scan
+        uses: aquasecurity/trivy-action@0.24.0
+        continue-on-error: true
+        id: trivy
+        with:
+          image-ref: "${{ needs.setup-env.outputs.ecr_url}}/${{ vars.APP_IMAGE_NAME }}:${{ steps.image-tag.outputs.tag }}"
+          hide-progress: true
+          format: table
+          exit-code: 0
+          scanners: vuln,secret,config
+          trivyignores: ./.trivyignore
+          output: trivy.txt
+
+      - name: Publish Trivy Output to Summary
+        shell: bash
+        run: |
+          if [[ -s trivy.txt ]]; then
+            {
+              echo "### Security Scan for APP"
+              echo "<details><summary>Click to expand</summary>"
+              echo ""
+              echo '```'
+              cat trivy.txt
+              echo '```'
+              echo "</details>"
+            } >> $GITHUB_STEP_SUMMARY
+          fi
+
+      - name: Fail on Vulnerabilities
+        shell: bash
+        if: ${{ steps.trivy.outcome == 'failure' }}
+        run: |
+          echo "❌ Vulnerabilities found in APP."
+          echo "Exiting with error due to detected vulnerabilities."
+          exit 1
+
+      - name: Login to Amazon AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-north-1
+          role-to-assume: arn:aws:iam::123456789100:role/github-actions-role
+          role-session-name: GHASession
+      
+      - name: Login to Amazon ECR
+        id: login-ecr
+        uses: aws-actions/amazon-ecr-login@v2
+
+      - name: Push to ECR
+        if: ${{ needs.setup-env.outputs.push_image == 'true' && steps.trivy.outcome == 'success' }}
+        shell: bash
+        run: |
+          docker push ${{ needs.setup-env.outputs.ecr_url}}/${{ vars.APP_IMAGE_NAME }} --all-tags
+
+  app-deploy:
+    if: github.event_name == 'push' || github.event.inputs.execute_release == 'true'
+    runs-on: ubuntu-latest
+    needs: 
+        - app-build-and-push
+        - app-test
+        - setup-env
+    steps:
+      - name: Set up Kubectl
+        uses: azure/setup-kubectl@v3
+
+      - name: Login to Amazon AWS
+        uses: aws-actions/configure-aws-credentials@v4
+        with:
+          aws-region: eu-north-1
+          role-to-assume: arn:aws:iam::123456789100:role/github-actions-role
+          role-session-name: GHASession
+      
+      - name: Update kubeconfig for EKS
+        run: |
+          aws eks update-kubeconfig --name ${{ vars.EKS_CLUSTER_NAME }} --region eu-north-1
+
+      - name: Set up ArgoCD CLI
+        run: |
+          curl -sSL -o /usr/local/bin/argocd https://github.com/argoproj/argo-cd/releases/download/v2.12.0/argocd-linux-amd64
+          chmod +x /usr/local/bin/argocd
+    
+      - name: Update Kubernetes Deployment with new Image
+        env:
+          IMAGE_URI: ${{ needs.setup-env.outputs.ecr_url }}/${{ vars.APP_IMAGE_NAME }}:${{ needs.app-build-and-push.outputs.image-tag }}
+        run: |
+          argocd app set app --param image.repository=${{ env.IMAGE_URI }}
+          argocd app sync app
+

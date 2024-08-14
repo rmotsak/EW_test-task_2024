@@ -1,0 +1,17 @@
+name: Calculate tag
+description: A custom action to calculate a tag
+outputs:
+  tag:
+    description: The calculated image tag
+    value: ${{ steps.image-tag.outputs.tag}}
+
+runs:
+  using: "composite"
+  steps:
+    - name: Calculate Tag
+      id: image-tag
+      shell: bash
+      run: |
+        declare -r SEMVER="1.0.${{ github.run_number }}"
+        declare -r GIT_HASH="$(git rev-parse --short HEAD)"
+        echo "tag=${SEMVER}-${GIT_HASH}" >> $GITHUB_OUTPUT
